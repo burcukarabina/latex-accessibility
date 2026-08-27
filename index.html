@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>LaTeX Accessibility Checker</title>
+
+  <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+
+  <main>
+    <h1>LaTeX Accessibility Checker</h1>
+
+    <p>
+      Upload an Overleaf or LaTeX project ZIP to check its
+      accessibility configuration.
+    </p>
+
+    <p>
+      Your files are processed locally in your browser and are not uploaded.
+    </p>
+
+    <section>
+      <h2>Upload Project</h2>
+
+      <input
+        type="file"
+        id="zipFile"
+        accept=".zip"
+      >
+
+      <button id="checkButton">
+        Check Project
+      </button>
+    </section>
+
+    <section>
+      <h2>Accessibility Report</h2>
+
+      <div id="report">
+        <p>No project has been checked yet.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="js/app.js"></script>
+
+</body>
+</html>
