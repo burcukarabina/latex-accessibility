@@ -23,46 +23,33 @@
       Your files are processed locally in your browser and are not uploaded.
     </p>
 
-    <section>
-      <h2>Upload Project</h2>
+   <section>
+  <h2>Upload Project</h2>
 
-      <input
-        type="file"
-        id="zipFile"
-        accept=".zip"
-      >
+  <input
+    type="file"
+    id="zipFile"
+    accept=".zip"
+  >
 
-      <input
-  type="file"
-  id="zipFile"
-  accept=".zip"
->
+  <div id="mainDocumentArea" hidden>
+    <label for="mainDocumentSelect">
+      Main document:
+    </label>
 
-<div id="mainDocumentArea" hidden>
-  <label for="mainDocumentSelect">
-    Main document:
-  </label>
+    <select id="mainDocumentSelect"></select>
+  </div>
 
-  <select id="mainDocumentSelect"></select>
-</div>
+  <p>
+    <button id="checkButton">
+      Check Project
+    </button>
 
-<button id="checkButton">
-  Check Project
-</button>
-
-<button id="fixButton" disabled>
-  Create Accessible Copy
-</button>
-      
-      <button id="checkButton">
-        Check Project
-      </button>
-
-      <button id="fixButton" disabled>
-  Create Accessible Copy
-</button>
-      
-    </section>
+    <button id="fixButton" disabled>
+      Create Accessible Copy
+    </button>
+  </p>
+</section>
 
     <section>
       <h2>Accessibility Report</h2>
