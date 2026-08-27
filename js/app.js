@@ -2,10 +2,44 @@ const checkButton = document.getElementById("checkButton");
 const fixButton = document.getElementById("fixButton");
 const zipFile = document.getElementById("zipFile");
 const report = document.getElementById("report");
+const mainDocumentArea = document.getElementById("mainDocumentArea");
+const mainDocumentSelect = document.getElementById("mainDocumentSelect");
 
 let currentProjectFile = null;
 let currentRootDocuments = [];
-currentRootDocuments
+let currentLatexFiles = [];
+let currentDependencyGraph = null;
+let currentAnalysisData = null;
+
+
+/* =========================================================
+   MAIN DOCUMENT SELECTOR
+   ========================================================= */
+
+mainDocumentSelect.addEventListener("change", () => {
+  if (
+    !mainDocumentSelect.value ||
+    currentLatexFiles.length === 0
+  ) {
+    currentDependencyGraph = null;
+    return;
+  }
+
+  currentDependencyGraph = buildDependencyGraph(
+    mainDocumentSelect.value,
+    currentLatexFiles
+  );
+
+  if (currentAnalysisData) {
+    renderReport(currentAnalysisData);
+  }
+});
+
+
+/* =========================================================
+   CHECK PROJECT
+   ========================================================= */
+
 checkButton.addEventListener("click", async () => {
   if (!zipFile.files.length) {
     showMessage("Please choose a ZIP file first.");
@@ -13,21 +47,26 @@ checkButton.addEventListener("click", async () => {
   }
 
   const file = zipFile.files[0];
+
   currentProjectFile = file;
-currentRootDocuments = [];
-fixButton.disabled = true;
+  currentRootDocuments = [];
+  currentLatexFiles = [];
+  currentDependencyGraph = null;
+  currentAnalysisData = null;
+
+  fixButton.disabled = true;
+  mainDocumentArea.hidden = true;
+  mainDocumentSelect.innerHTML = "";
 
   showMessage(`Reading ${file.name}...`);
 
   try {
     const zip = await JSZip.loadAsync(file);
-
     const latexFiles = [];
 
     for (const [filename, zipEntry] of Object.entries(zip.files)) {
       if (zipEntry.dir) continue;
 
-      // Ignore common operating-system metadata files
       if (
         filename.startsWith("__MACOSX/") ||
         filename.endsWith(".DS_Store")
@@ -45,13 +84,14 @@ fixButton.disabled = true;
         const rawContent = await zipEntry.async("string");
 
         latexFiles.push({
-          filename,
+          filename: normalizeProjectPath(filename),
           rawContent,
           content: stripLatexComments(rawContent)
         });
       }
     }
 
+    currentLatexFiles = latexFiles;
     analyzeProject(file.name, latexFiles);
 
   } catch (error) {
@@ -64,6 +104,10 @@ fixButton.disabled = true;
 });
 
 
+/* =========================================================
+   PROJECT ANALYSIS
+   ========================================================= */
+
 function analyzeProject(projectName, files) {
   if (files.length === 0) {
     showMessage(
@@ -72,52 +116,14 @@ function analyzeProject(projectName, files) {
     return;
   }
 
-  // Find files containing \documentclass.
-  // These are candidate root/main documents.
   const rootDocuments = files.filter(file =>
     /\\documentclass(?:\s*\[[^\]]*\])?\s*\{/.test(file.content)
   );
 
-currentRootDocuments =
-  rootDocuments.map(file => file.filename);
+  currentRootDocuments = rootDocuments.map(file => file.filename);
 
-updateMainDocumentSelector();
-  function updateMainDocumentSelector() {
+  updateMainDocumentSelector();
 
-  mainDocumentSelect.innerHTML = "";
-
-  if (currentRootDocuments.length === 0) {
-    mainDocumentArea.hidden = true;
-    fixButton.disabled = true;
-    return;
-  }
-
-  currentRootDocuments.forEach(filename => {
-
-    const option =
-      document.createElement("option");
-
-    option.value = filename;
-    option.textContent = filename;
-
-    mainDocumentSelect.appendChild(option);
-  });
-
-  // Prefer main.tex automatically when it exists.
-  const preferredMain =
-    currentRootDocuments.find(filename =>
-      filename.toLowerCase() === "main.tex"
-    );
-
-  if (preferredMain) {
-    mainDocumentSelect.value = preferredMain;
-  }
-
-  mainDocumentArea.hidden = false;
-  fixButton.disabled = false;
-}
-
-  // Search the entire project for important accessibility settings.
   const metadataFiles = files.filter(file =>
     file.content.includes("\\DocumentMetadata")
   );
@@ -136,7 +142,7 @@ updateMainDocumentSelector();
     inspectRootDocument(root)
   );
 
-  renderReport({
+  currentAnalysisData = {
     projectName,
     files,
     rootDocuments,
@@ -144,7 +150,59 @@ updateMainDocumentSelector();
     mathMLFiles,
     luaMMLDisabledFiles,
     metadataResults
+  };
+
+  renderReport(currentAnalysisData);
+}
+
+
+function updateMainDocumentSelector() {
+  mainDocumentSelect.innerHTML = "";
+
+  if (currentRootDocuments.length === 0) {
+    mainDocumentArea.hidden = true;
+    fixButton.disabled = true;
+    currentDependencyGraph = null;
+    return;
+  }
+
+  currentRootDocuments.forEach(filename => {
+    const option = document.createElement("option");
+    option.value = filename;
+    option.textContent = filename;
+    mainDocumentSelect.appendChild(option);
   });
+
+  const preferredMain = currentRootDocuments.find(filename => {
+    const normalized = normalizeProjectPath(filename).toLowerCase();
+
+    return (
+      normalized === "main.tex" ||
+      normalized.endsWith("/main.tex")
+    );
+  });
+
+  if (preferredMain) {
+    mainDocumentSelect.value = preferredMain;
+  }
+
+  mainDocumentArea.hidden = false;
+  fixButton.disabled = false;
+
+  currentDependencyGraph = buildDependencyGraph(
+    mainDocumentSelect.value,
+    currentLatexFiles
+  );
+
+  console.log(
+    "Selected main document:",
+    mainDocumentSelect.value
+  );
+
+  console.log(
+    "Dependency graph:",
+    currentDependencyGraph
+  );
 }
 
 
@@ -196,7 +254,6 @@ function inspectRootDocument(file) {
 function extractCommandArgument(text, commandPosition, commandName) {
   let position = commandPosition + commandName.length;
 
-  // Skip whitespace
   while (
     position < text.length &&
     /\s/.test(text[position])
@@ -217,7 +274,6 @@ function extractCommandArgument(text, commandPosition, commandName) {
     if (char === "{") {
       depth++;
 
-      // Do not include the outermost brace
       if (depth > 1) {
         result += char;
       }
@@ -252,14 +308,16 @@ function stripLatexComments(text) {
       for (let i = 0; i < line.length; i++) {
         if (line[i] !== "%") continue;
 
-        // Count consecutive backslashes immediately before %
         let backslashes = 0;
 
-        for (let j = i - 1; j >= 0 && line[j] === "\\"; j--) {
+        for (
+          let j = i - 1;
+          j >= 0 && line[j] === "\\";
+          j--
+        ) {
           backslashes++;
         }
 
-        // An even number means % is not escaped.
         if (backslashes % 2 === 0) {
           return line.substring(0, i);
         }
@@ -270,6 +328,315 @@ function stripLatexComments(text) {
     .join("\n");
 }
 
+
+/* =========================================================
+   DEPENDENCY SCANNER
+   ========================================================= */
+
+function normalizeProjectPath(path) {
+  const parts = [];
+
+  path
+    .replace(/\\/g, "/")
+    .split("/")
+    .forEach(part => {
+      if (!part || part === ".") {
+        return;
+      }
+
+      if (part === "..") {
+        if (parts.length > 0) {
+          parts.pop();
+        }
+        return;
+      }
+
+      parts.push(part);
+    });
+
+  return parts.join("/");
+}
+
+
+function getDirectory(filename) {
+  const normalized = normalizeProjectPath(filename);
+  const slash = normalized.lastIndexOf("/");
+
+  return slash === -1
+    ? ""
+    : normalized.slice(0, slash);
+}
+
+
+function joinProjectPath(directory, target) {
+  if (!directory) {
+    return normalizeProjectPath(target);
+  }
+
+  return normalizeProjectPath(
+    `${directory}/${target}`
+  );
+}
+
+
+function looksDynamicReference(target) {
+  return (
+    target.includes("\\") ||
+    target.includes("#") ||
+    target.includes("$")
+  );
+}
+
+
+function extractDependencies(file) {
+  const dependencies = [];
+  const content = file.content;
+
+  // \input, \include, \subfile
+  const texPattern =
+    /\\(input|include|subfile)\s*\{([^{}]+)\}/g;
+
+  let match;
+
+  while (
+    (match = texPattern.exec(content)) !== null
+  ) {
+    dependencies.push({
+      type: match[1],
+      target: match[2].trim(),
+      required: true
+    });
+  }
+
+  // Local packages
+  const packagePattern =
+    /\\(?:usepackage|RequirePackage)(?:\s*\[[^\]]*\])?\s*\{([^{}]+)\}/g;
+
+  while (
+    (match = packagePattern.exec(content)) !== null
+  ) {
+    match[1]
+      .split(",")
+      .map(name => name.trim())
+      .filter(Boolean)
+      .forEach(name => {
+        dependencies.push({
+          type: "package",
+          target: name,
+          required: false
+        });
+      });
+  }
+
+  // Local document class
+  const classPattern =
+    /\\documentclass(?:\s*\[[^\]]*\])?\s*\{([^{}]+)\}/g;
+
+  while (
+    (match = classPattern.exec(content)) !== null
+  ) {
+    dependencies.push({
+      type: "class",
+      target: match[1].trim(),
+      required: false
+    });
+  }
+
+  return dependencies;
+}
+
+
+function resolveDependency(
+  fromFilename,
+  dependency,
+  fileMap
+) {
+  const target = dependency.target;
+
+  if (looksDynamicReference(target)) {
+    return {
+      status: "dynamic",
+      target
+    };
+  }
+
+  const directory = getDirectory(fromFilename);
+  let candidates = [];
+
+  if (
+    dependency.type === "input" ||
+    dependency.type === "include" ||
+    dependency.type === "subfile"
+  ) {
+    // Relative to current file.
+    candidates.push(
+      joinProjectPath(directory, target)
+    );
+
+    // Relative to project root.
+    candidates.push(
+      normalizeProjectPath(target)
+    );
+
+    if (!/\.[A-Za-z0-9]+$/.test(target)) {
+      candidates.push(
+        joinProjectPath(
+          directory,
+          `${target}.tex`
+        )
+      );
+
+      candidates.push(
+        normalizeProjectPath(
+          `${target}.tex`
+        )
+      );
+    }
+  }
+
+  if (dependency.type === "package") {
+    const packageTarget = /\.sty$/i.test(target)
+      ? target
+      : `${target}.sty`;
+
+    candidates.push(
+      joinProjectPath(
+        directory,
+        packageTarget
+      )
+    );
+
+    candidates.push(
+      normalizeProjectPath(packageTarget)
+    );
+  }
+
+  if (dependency.type === "class") {
+    const classTarget = /\.cls$/i.test(target)
+      ? target
+      : `${target}.cls`;
+
+    candidates.push(
+      joinProjectPath(
+        directory,
+        classTarget
+      )
+    );
+
+    candidates.push(
+      normalizeProjectPath(classTarget)
+    );
+  }
+
+  candidates = [...new Set(candidates)];
+
+  for (const candidate of candidates) {
+    if (fileMap.has(candidate)) {
+      return {
+        status: "found",
+        filename: candidate
+      };
+    }
+  }
+
+  if (dependency.required) {
+    return {
+      status: "missing",
+      target
+    };
+  }
+
+  return {
+    status: "external",
+    target
+  };
+}
+
+
+function buildDependencyGraph(
+  rootFilename,
+  files
+) {
+  const fileMap = new Map();
+
+  files.forEach(file => {
+    fileMap.set(
+      normalizeProjectPath(file.filename),
+      file
+    );
+  });
+
+  const root = normalizeProjectPath(rootFilename);
+  const usedFiles = new Set();
+  const edges = [];
+  const missing = [];
+  const dynamic = [];
+
+  function visit(filename) {
+    if (usedFiles.has(filename)) {
+      return;
+    }
+
+    const file = fileMap.get(filename);
+
+    if (!file) {
+      return;
+    }
+
+    usedFiles.add(filename);
+
+    const dependencies = extractDependencies(file);
+
+    dependencies.forEach(dependency => {
+      const resolution = resolveDependency(
+        filename,
+        dependency,
+        fileMap
+      );
+
+      if (resolution.status === "found") {
+        edges.push({
+          from: filename,
+          to: resolution.filename,
+          type: dependency.type
+        });
+
+        visit(resolution.filename);
+      }
+
+      if (resolution.status === "missing") {
+        missing.push({
+          from: filename,
+          target: dependency.target,
+          type: dependency.type
+        });
+      }
+
+      if (resolution.status === "dynamic") {
+        dynamic.push({
+          from: filename,
+          target: dependency.target,
+          type: dependency.type
+        });
+      }
+    });
+  }
+
+  visit(root);
+
+  return {
+    root,
+    usedFiles,
+    edges,
+    missing,
+    dynamic
+  };
+}
+
+
+/* =========================================================
+   REPORT
+   ========================================================= */
 
 function renderReport(data) {
   report.innerHTML = "";
@@ -301,6 +668,58 @@ function renderReport(data) {
     data.rootDocuments.forEach(file => {
       addDetail(file.filename);
     });
+  }
+
+
+  // SELECTED PROJECT SCOPE
+  addSectionHeading("Selected project scope");
+
+  if (!currentDependencyGraph) {
+    addResult(
+      "warning",
+      "No main document is currently selected."
+    );
+  } else {
+    addResult(
+      "pass",
+      `Selected main document: ${currentDependencyGraph.root}`
+    );
+
+    addResult(
+      "pass",
+      `${currentDependencyGraph.usedFiles.size} project file(s) are used by the selected document.`
+    );
+
+    if (currentDependencyGraph.missing.length === 0) {
+      addResult(
+        "pass",
+        "No missing input/include/subfile files were detected."
+      );
+    } else {
+      addResult(
+        "warning",
+        `${currentDependencyGraph.missing.length} referenced file(s) could not be found.`
+      );
+
+      currentDependencyGraph.missing.forEach(item => {
+        addDetail(
+          `${item.from} → ${item.target}`
+        );
+      });
+    }
+
+    if (currentDependencyGraph.dynamic.length > 0) {
+      addResult(
+        "warning",
+        `${currentDependencyGraph.dynamic.length} dynamic file reference(s) require manual review.`
+      );
+
+      currentDependencyGraph.dynamic.forEach(item => {
+        addDetail(
+          `${item.from} → ${item.target}`
+        );
+      });
+    }
   }
 
 
@@ -424,7 +843,6 @@ function addSectionHeading(text) {
 
 function addResult(type, text) {
   const item = document.createElement("div");
-
   item.className = `result ${type}`;
 
   let prefix = "";
@@ -438,17 +856,14 @@ function addResult(type, text) {
   }
 
   item.textContent = prefix + text;
-
   report.appendChild(item);
 }
 
 
 function addDetail(text) {
   const detail = document.createElement("div");
-
   detail.className = "detail";
   detail.textContent = text;
-
   report.appendChild(detail);
 }
 
@@ -458,21 +873,24 @@ function showMessage(message) {
 
   const paragraph = document.createElement("p");
   paragraph.textContent = message;
-
   report.appendChild(paragraph);
 }
 
-fixButton.addEventListener("click", async () => {
 
+/* =========================================================
+   CREATE ACCESSIBLE COPY
+   ========================================================= */
+
+fixButton.addEventListener("click", async () => {
   if (!currentProjectFile) {
     alert("Please check a project first.");
     return;
   }
 
- if (!mainDocumentSelect.value) {
-  alert("Please select the main LaTeX document.");
-  return;
-}
+  if (!mainDocumentSelect.value) {
+    alert("Please select the main LaTeX document.");
+    return;
+  }
 
   const originalButtonText = fixButton.textContent;
 
@@ -480,22 +898,26 @@ fixButton.addEventListener("click", async () => {
   fixButton.textContent = "Creating Accessible Copy...";
 
   try {
-
-    // Re-open the ORIGINAL uploaded ZIP.
-    // This means we never modify the user's original project.
     const outputZip = await JSZip.loadAsync(currentProjectFile);
 
-    const rootFilename =
-  mainDocumentSelect.value;
+    const rootFilename = normalizeProjectPath(
+      mainDocumentSelect.value
+    );
 
+    const projectScope = buildDependencyGraph(
+      rootFilename,
+      currentLatexFiles
+    );
+
+    const filesToFix = projectScope.usedFiles;
     const changes = [];
 
-    for (const [filename, zipEntry] of Object.entries(outputZip.files)) {
-
+    for (const [rawFilename, zipEntry] of Object.entries(outputZip.files)) {
       if (zipEntry.dir) {
         continue;
       }
 
+      const filename = normalizeProjectPath(rawFilename);
       const lowerName = filename.toLowerCase();
 
       if (
@@ -506,12 +928,16 @@ fixButton.addEventListener("click", async () => {
         continue;
       }
 
+      // Only modify files that belong to the selected document.
+      if (!filesToFix.has(filename)) {
+        continue;
+      }
+
       let source = await zipEntry.async("string");
       const originalSource = source;
 
-      // Only the main document receives \DocumentMetadata.
+      // Only the selected main document receives \DocumentMetadata.
       if (filename === rootFilename) {
-
         const metadataResult =
           ensureAccessibleDocumentMetadata(source);
 
@@ -522,8 +948,8 @@ fixButton.addEventListener("click", async () => {
         });
       }
 
-      // Search ALL LaTeX source/configuration files
-      // for settings that explicitly disable LuaMML.
+      // Remove settings that explicitly disable LuaMML
+      // from files used by the selected document.
       const luammlResult =
         removeLuaMMLDisablingSettings(source);
 
@@ -534,15 +960,14 @@ fixButton.addEventListener("click", async () => {
       });
 
       if (source !== originalSource) {
-        outputZip.file(filename, source);
+        outputZip.file(rawFilename, source);
       }
     }
 
-
-    // Add a human-readable report to the ZIP.
     const reportText = buildAccessibilityChangesReport(
       rootFilename,
-      changes
+      changes,
+      projectScope
     );
 
     outputZip.file(
@@ -550,8 +975,6 @@ fixButton.addEventListener("click", async () => {
       reportText
     );
 
-
-    // Generate the new ZIP entirely in the browser.
     const blob = await outputZip.generateAsync({
       type: "blob"
     });
@@ -560,7 +983,6 @@ fixButton.addEventListener("click", async () => {
       createAccessibleFilename(currentProjectFile.name);
 
     downloadBlob(blob, outputName);
-
 
     addSectionHeading("Accessible copy");
 
@@ -574,7 +996,6 @@ fixButton.addEventListener("click", async () => {
     );
 
   } catch (error) {
-
     console.error(error);
 
     alert(
@@ -582,17 +1003,20 @@ fixButton.addEventListener("click", async () => {
     );
 
   } finally {
-
-fixButton.disabled =
-  currentRootDocuments.length === 0;
+    fixButton.disabled =
+      currentRootDocuments.length === 0;
 
     fixButton.textContent =
       originalButtonText;
   }
 });
 
-function ensureAccessibleDocumentMetadata(source) {
 
+/* =========================================================
+   ACCESSIBILITY METADATA FIXER
+   ========================================================= */
+
+function ensureAccessibleDocumentMetadata(source) {
   const changes = [];
 
   const metadataRange =
@@ -611,11 +1035,8 @@ function ensureAccessibleDocumentMetadata(source) {
   const documentClassIndex =
     documentClassMatch.index;
 
-
-  // CASE 1:
-  // No \DocumentMetadata exists.
+  // CASE 1: No \DocumentMetadata exists.
   if (!metadataRange) {
-
     const metadata =
 `\\DocumentMetadata{
   lang=en-US,
@@ -642,10 +1063,8 @@ function ensureAccessibleDocumentMetadata(source) {
     };
   }
 
-
-  // CASE 2:
-  // Metadata already exists.
-  let metadataContent =
+  // CASE 2: Metadata already exists.
+  const metadataContent =
     source.slice(
       metadataRange.contentStart,
       metadataRange.contentEnd
@@ -654,38 +1073,31 @@ function ensureAccessibleDocumentMetadata(source) {
   let entries =
     splitTopLevelCommaList(metadataContent);
 
+  entries = setMetadataEntry(
+    entries,
+    "lang",
+    "en-US"
+  );
 
-  entries =
-    setMetadataEntry(
-      entries,
-      "lang",
-      "en-US"
-    );
+  entries = setMetadataEntry(
+    entries,
+    "pdfversion",
+    "2.0"
+  );
 
-  entries =
-    setMetadataEntry(
-      entries,
-      "pdfversion",
-      "2.0"
-    );
+  entries = setMetadataEntry(
+    entries,
+    "pdfstandard",
+    "ua-2"
+  );
 
-  entries =
-    setMetadataEntry(
-      entries,
-      "pdfstandard",
-      "ua-2"
-    );
+  entries = setMetadataEntry(
+    entries,
+    "tagging",
+    "on"
+  );
 
-  entries =
-    setMetadataEntry(
-      entries,
-      "tagging",
-      "on"
-    );
-
-  entries =
-    ensureMathMLTaggingSetup(entries);
-
+  entries = ensureMathMLTaggingSetup(entries);
 
   const newMetadata =
 `\\DocumentMetadata{
@@ -695,17 +1107,14 @@ function ensureAccessibleDocumentMetadata(source) {
     .join(",\n  ")}
 }`;
 
-
   source =
     source.slice(0, metadataRange.start) +
     newMetadata +
     source.slice(metadataRange.end);
 
-
   changes.push(
     "Updated \\DocumentMetadata for PDF/UA-2 tagging and MathML-SE."
   );
-
 
   return {
     source,
@@ -713,19 +1122,16 @@ function ensureAccessibleDocumentMetadata(source) {
   };
 }
 
+
 function findDocumentMetadata(source) {
-
   const command = "\\DocumentMetadata";
-
-  const position =
-    source.indexOf(command);
+  const position = source.indexOf(command);
 
   if (position === -1) {
     return null;
   }
 
-  let openBrace =
-    position + command.length;
+  let openBrace = position + command.length;
 
   while (
     openBrace < source.length &&
@@ -745,7 +1151,6 @@ function findDocumentMetadata(source) {
     i < source.length;
     i++
   ) {
-
     const char = source[i];
 
     if (
@@ -759,11 +1164,9 @@ function findDocumentMetadata(source) {
       char === "}" &&
       !isCharacterEscaped(source, i)
     ) {
-
       depth--;
 
       if (depth === 0) {
-
         return {
           start: position,
           end: i + 1,
@@ -779,7 +1182,6 @@ function findDocumentMetadata(source) {
 
 
 function isCharacterEscaped(text, position) {
-
   let backslashes = 0;
 
   for (
@@ -793,24 +1195,20 @@ function isCharacterEscaped(text, position) {
   return backslashes % 2 === 1;
 }
 
+
 function splitTopLevelCommaList(text) {
-
   const entries = [];
-
   let current = "";
 
   let braceDepth = 0;
   let bracketDepth = 0;
   let parenthesisDepth = 0;
-
   let inComment = false;
 
   for (let i = 0; i < text.length; i++) {
-
     const char = text[i];
 
     if (inComment) {
-
       current += char;
 
       if (char === "\n") {
@@ -824,12 +1222,10 @@ function splitTopLevelCommaList(text) {
       char === "%" &&
       !isCharacterEscaped(text, i)
     ) {
-
       inComment = true;
       current += char;
       continue;
     }
-
 
     if (
       char === "{" &&
@@ -873,17 +1269,14 @@ function splitTopLevelCommaList(text) {
       parenthesisDepth--;
     }
 
-
     if (
       char === "," &&
       braceDepth === 0 &&
       bracketDepth === 0 &&
       parenthesisDepth === 0
     ) {
-
       entries.push(current);
       current = "";
-
       continue;
     }
 
@@ -897,43 +1290,33 @@ function splitTopLevelCommaList(text) {
   return entries;
 }
 
+
 function setMetadataEntry(
   entries,
   key,
   value
 ) {
+  const escapedKey = key.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
 
-  const escapedKey =
-    key.replace(
-      /[.*+?^${}()|[\]\\]/g,
-      "\\$&"
-    );
-
-  const pattern =
-    new RegExp(
-      "^\\s*" +
-      escapedKey +
-      "\\s*="
-    );
+  const pattern = new RegExp(
+    "^\\s*" +
+    escapedKey +
+    "\\s*="
+  );
 
   let replaced = false;
-
   const result = [];
 
   for (const entry of entries) {
-
     if (pattern.test(entry.trim())) {
-
       if (!replaced) {
-
-        result.push(
-          `${key}=${value}`
-        );
-
+        result.push(`${key}=${value}`);
         replaced = true;
       }
 
-      // Ignore duplicate copies
       continue;
     }
 
@@ -941,29 +1324,22 @@ function setMetadataEntry(
   }
 
   if (!replaced) {
-
-    result.push(
-      `${key}=${value}`
-    );
+    result.push(`${key}=${value}`);
   }
 
   return result;
 }
 
-function ensureMathMLTaggingSetup(entries) {
 
+function ensureMathMLTaggingSetup(entries) {
   const pattern =
     /^\s*tagging-setup\s*=/;
 
-  const index =
-    entries.findIndex(entry =>
-      pattern.test(entry.trim())
-    );
+  const index = entries.findIndex(entry =>
+    pattern.test(entry.trim())
+  );
 
-
-  // No tagging-setup exists yet.
   if (index === -1) {
-
     entries.push(
       "tagging-setup={math/setup=mathml-SE}"
     );
@@ -971,38 +1347,27 @@ function ensureMathMLTaggingSetup(entries) {
     return entries;
   }
 
-
-  const entry =
-    entries[index].trim();
-
-  const equalsPosition =
-    entry.indexOf("=");
+  const entry = entries[index].trim();
+  const equalsPosition = entry.indexOf("=");
 
   let value =
     entry.slice(equalsPosition + 1).trim();
-
 
   if (
     value.startsWith("{") &&
     value.endsWith("}")
   ) {
-
-    value =
-      value.slice(1, -1);
+    value = value.slice(1, -1);
   }
-
 
   let setupEntries =
     splitTopLevelCommaList(value);
 
-
-  setupEntries =
-    setMetadataEntry(
-      setupEntries,
-      "math/setup",
-      "mathml-SE"
-    );
-
+  setupEntries = setMetadataEntry(
+    setupEntries,
+    "math/setup",
+    "mathml-SE"
+  );
 
   entries[index] =
     `tagging-setup={${setupEntries
@@ -1010,52 +1375,44 @@ function ensureMathMLTaggingSetup(entries) {
       .filter(Boolean)
       .join(", ")}}`;
 
-
   return entries;
 }
 
-function removeLuaMMLDisablingSettings(source) {
 
+/* =========================================================
+   LUAMML FIXER
+   ========================================================= */
+
+function removeLuaMMLDisablingSettings(source) {
   const changes = [];
 
-
-  // Remove the exact helper-style conditional block.
   const conditionalPattern =
     /\\IfPackageAtLeastTF\s*\{tagpdf\}\s*\{[^}]*\}\s*\{\s*\\tagpdfsetup\s*\{\s*math\s*\/\s*mathml\s*\/\s*luamml\s*\/\s*load\s*=\s*false\s*\}\s*\}\s*\{\s*\}/gs;
 
-
   if (conditionalPattern.test(source)) {
-
-    source =
-      source.replace(
-        conditionalPattern,
-        ""
-      );
+    source = source.replace(
+      conditionalPattern,
+      ""
+    );
 
     changes.push(
       "Removed conditional setting that disabled LuaMML."
     );
   }
 
-
-  // Also catch a direct \tagpdfsetup command.
   const directPattern =
     /\\tagpdfsetup\s*\{\s*math\s*\/\s*mathml\s*\/\s*luamml\s*\/\s*load\s*=\s*false\s*\}/gs;
 
-
   if (directPattern.test(source)) {
-
-    source =
-      source.replace(
-        directPattern,
-        ""
-      );
+    source = source.replace(
+      directPattern,
+      ""
+    );
 
     changes.push(
       "Removed math/mathml/luamml/load=false."
     );
   }
-
 
   return {
     source,
@@ -1063,11 +1420,16 @@ function removeLuaMMLDisablingSettings(source) {
   };
 }
 
+
+/* =========================================================
+   CHANGE REPORT + DOWNLOAD
+   ========================================================= */
+
 function buildAccessibilityChangesReport(
   rootFilename,
-  changes
+  changes,
+  projectScope
 ) {
-
   let text =
 `LATEX ACCESSIBILITY PROJECT FIXER
 =================================
@@ -1075,27 +1437,53 @@ function buildAccessibilityChangesReport(
 Main document:
 ${rootFilename}
 
+Project scope:
+${projectScope.usedFiles.size} LaTeX project file(s) used by the selected document.
+
 Changes made
 ------------
 `;
 
   if (changes.length === 0) {
-
     text +=
 `No source changes were necessary.
 `;
-
   } else {
-
     changes.forEach(change => {
       text += `- ${change}\n`;
     });
   }
 
+  if (projectScope.missing.length > 0) {
+    text +=
+`
+Warnings
+--------
+`;
+
+    projectScope.missing.forEach(item => {
+      text +=
+        `- Missing reference: ${item.from} -> ${item.target}\n`;
+    });
+  }
+
+  if (projectScope.dynamic.length > 0) {
+    if (projectScope.missing.length === 0) {
+      text +=
+`
+Warnings
+--------
+`;
+    }
+
+    projectScope.dynamic.forEach(item => {
+      text +=
+        `- Dynamic reference requires review: ${item.from} -> ${item.target}\n`;
+    });
+  }
 
   text +=
 `
-
 IMPORTANT
 ---------
 
@@ -1121,8 +1509,8 @@ have otherwise been preserved.
   return text;
 }
 
-function createAccessibleFilename(filename) {
 
+function createAccessibleFilename(filename) {
   const base =
     filename.replace(/\.zip$/i, "");
 
@@ -1131,22 +1519,15 @@ function createAccessibleFilename(filename) {
 
 
 function downloadBlob(blob, filename) {
-
-  const url =
-    URL.createObjectURL(blob);
-
-  const link =
-    document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
 
   link.href = url;
   link.download = filename;
 
   document.body.appendChild(link);
-
   link.click();
-
   link.remove();
 
   URL.revokeObjectURL(url);
 }
-
