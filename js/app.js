@@ -1,6 +1,10 @@
 const checkButton = document.getElementById("checkButton");
+const fixButton = document.getElementById("fixButton");
 const zipFile = document.getElementById("zipFile");
 const report = document.getElementById("report");
+
+let currentProjectFile = null;
+let currentRootDocuments = [];
 
 checkButton.addEventListener("click", async () => {
   if (!zipFile.files.length) {
