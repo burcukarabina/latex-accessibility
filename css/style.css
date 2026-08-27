@@ -1,0 +1,28 @@
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  line-height: 1.6;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+h1 {
+  margin-bottom: 0.5rem;
+}
+
+section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid #ccc;
+}
+
+button {
+  padding: 0.6rem 1rem;
+  margin-left: 0.5rem;
+  cursor: pointer;
+}
+
+#report {
+  padding: 1rem;
+  background: #f5f5f5;
+}
