@@ -5,7 +5,7 @@ const report = document.getElementById("report");
 
 let currentProjectFile = null;
 let currentRootDocuments = [];
-
+currentRootDocuments
 checkButton.addEventListener("click", async () => {
   if (!zipFile.files.length) {
     showMessage("Please choose a ZIP file first.");
@@ -78,11 +78,44 @@ function analyzeProject(projectName, files) {
     /\\documentclass(?:\s*\[[^\]]*\])?\s*\{/.test(file.content)
   );
 
-  currentRootDocuments = rootDocuments.map(file => file.filename);
+currentRootDocuments =
+  rootDocuments.map(file => file.filename);
 
-// For Version 1 we only modify projects where
-// exactly one main document can be identified safely.
-fixButton.disabled = currentRootDocuments.length !== 1;
+updateMainDocumentSelector();
+  function updateMainDocumentSelector() {
+
+  mainDocumentSelect.innerHTML = "";
+
+  if (currentRootDocuments.length === 0) {
+    mainDocumentArea.hidden = true;
+    fixButton.disabled = true;
+    return;
+  }
+
+  currentRootDocuments.forEach(filename => {
+
+    const option =
+      document.createElement("option");
+
+    option.value = filename;
+    option.textContent = filename;
+
+    mainDocumentSelect.appendChild(option);
+  });
+
+  // Prefer main.tex automatically when it exists.
+  const preferredMain =
+    currentRootDocuments.find(filename =>
+      filename.toLowerCase() === "main.tex"
+    );
+
+  if (preferredMain) {
+    mainDocumentSelect.value = preferredMain;
+  }
+
+  mainDocumentArea.hidden = false;
+  fixButton.disabled = false;
+}
 
   // Search the entire project for important accessibility settings.
   const metadataFiles = files.filter(file =>
@@ -436,12 +469,10 @@ fixButton.addEventListener("click", async () => {
     return;
   }
 
-  if (currentRootDocuments.length !== 1) {
-    alert(
-      "The checker must identify exactly one main LaTeX document before creating an accessible copy."
-    );
-    return;
-  }
+ if (!mainDocumentSelect.value) {
+  alert("Please select the main LaTeX document.");
+  return;
+}
 
   const originalButtonText = fixButton.textContent;
 
@@ -454,7 +485,8 @@ fixButton.addEventListener("click", async () => {
     // This means we never modify the user's original project.
     const outputZip = await JSZip.loadAsync(currentProjectFile);
 
-    const rootFilename = currentRootDocuments[0];
+    const rootFilename =
+  mainDocumentSelect.value;
 
     const changes = [];
 
@@ -551,8 +583,8 @@ fixButton.addEventListener("click", async () => {
 
   } finally {
 
-    fixButton.disabled =
-      currentRootDocuments.length !== 1;
+fixButton.disabled =
+  currentRootDocuments.length === 0;
 
     fixButton.textContent =
       originalButtonText;
