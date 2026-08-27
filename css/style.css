@@ -26,3 +26,32 @@ button {
   padding: 1rem;
   background: #f5f5f5;
 }
+.result {
+  padding: 0.65rem 0.8rem;
+  margin: 0.4rem 0;
+  border-left: 5px solid;
+  background: white;
+}
+
+.result.pass {
+  border-left-color: #2e7d32;
+}
+
+.result.warning {
+  border-left-color: #b26a00;
+}
+
+.result.fail {
+  border-left-color: #b00020;
+}
+
+.detail {
+  margin-left: 1.5rem;
+  padding: 0.2rem 0;
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+#report h3 {
+  margin-top: 1.8rem;
+}
