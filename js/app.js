@@ -13,6 +13,42 @@ let currentAnalysisData = null;
 
 
 /* =========================================================
+   PACKAGE COMPATIBILITY RULES
+   ========================================================= */
+
+// Small, conservative compatibility list based on issues we have
+// actually encountered in course-note projects. These rules are
+// intentionally local to the browser app; they do not modify a
+// project unless a fix is marked safe.
+const PACKAGE_COMPATIBILITY_RULES = {
+  systeme: {
+    status: "currently-incompatible",
+    note: "No LuaMML support.",
+    autoRemoveIfUnused: true,
+    usagePatterns: [
+      /\\(?:systeme|setsysteme|sys[A-Za-z@]+)\b/g
+    ]
+  },
+
+  enumerate: {
+    status: "currently-incompatible",
+    note: "Legacy enumerate package; list migration may be required.",
+    autoRemoveIfUnused: false,
+    usagePatterns: []
+  },
+
+  esvect: {
+    status: "currently-incompatible",
+    note: "No LuaMML support.",
+    autoRemoveIfUnused: false,
+    usagePatterns: [
+      /\\vv\b/g
+    ]
+  }
+};
+
+
+/* =========================================================
    MAIN DOCUMENT SELECTOR
    ========================================================= */
 
@@ -173,14 +209,19 @@ function updateMainDocumentSelector() {
     mainDocumentSelect.appendChild(option);
   });
 
-  const preferredMain = currentRootDocuments.find(filename => {
-    const normalized = normalizeProjectPath(filename).toLowerCase();
+  // Prefer a root-level main.tex first. Only fall back to a nested
+  // */main.tex if the project does not have one at the root.
+  let preferredMain = currentRootDocuments.find(filename =>
+    normalizeProjectPath(filename).toLowerCase() === "main.tex"
+  );
 
-    return (
-      normalized === "main.tex" ||
-      normalized.endsWith("/main.tex")
+  if (!preferredMain) {
+    preferredMain = currentRootDocuments.find(filename =>
+      normalizeProjectPath(filename)
+        .toLowerCase()
+        .endsWith("/main.tex")
     );
-  });
+  }
 
   if (preferredMain) {
     mainDocumentSelect.value = preferredMain;
@@ -635,6 +676,180 @@ function buildDependencyGraph(
 
 
 /* =========================================================
+   PACKAGE COMPATIBILITY ANALYSIS
+   ========================================================= */
+
+function getScopedFiles(files, projectScope) {
+  if (!projectScope) {
+    return [];
+  }
+
+  return files.filter(file =>
+    projectScope.usedFiles.has(
+      normalizeProjectPath(file.filename)
+    )
+  );
+}
+
+
+function findPackageDeclarations(files, projectScope) {
+  const declarations = [];
+  const scopedFiles = getScopedFiles(files, projectScope);
+
+  const packagePattern =
+    /\\(usepackage|RequirePackage)(?:\s*\[[^\]]*\])?\s*\{([^{}]+)\}/g;
+
+  scopedFiles.forEach(file => {
+    let match;
+
+    while (
+      (match = packagePattern.exec(file.content)) !== null
+    ) {
+      match[2]
+        .split(",")
+        .map(name => name.trim())
+        .filter(Boolean)
+        .forEach(name => {
+          declarations.push({
+            filename: file.filename,
+            command: match[1],
+            packageName: name
+          });
+        });
+    }
+
+    packagePattern.lastIndex = 0;
+  });
+
+  return declarations;
+}
+
+
+function countRegexMatches(text, pattern) {
+  const flags = pattern.flags.includes("g")
+    ? pattern.flags
+    : pattern.flags + "g";
+
+  const regex = new RegExp(pattern.source, flags);
+  let count = 0;
+
+  while (regex.exec(text) !== null) {
+    count++;
+
+    // Avoid an infinite loop for a zero-length regular expression.
+    if (regex.lastIndex === 0) {
+      regex.lastIndex++;
+    }
+  }
+
+  return count;
+}
+
+
+function analyzePackageCompatibility(files, projectScope) {
+  if (!projectScope) {
+    return [];
+  }
+
+  const declarations =
+    findPackageDeclarations(files, projectScope);
+
+  const scopedFiles = getScopedFiles(files, projectScope);
+  const combinedContent = scopedFiles
+    .map(file => file.content)
+    .join("\n");
+
+  const results = [];
+
+  Object.entries(PACKAGE_COMPATIBILITY_RULES)
+    .forEach(([packageName, rule]) => {
+      const loadedIn = declarations
+        .filter(item =>
+          item.packageName.toLowerCase() ===
+          packageName.toLowerCase()
+        )
+        .map(item => item.filename);
+
+      if (loadedIn.length === 0) {
+        return;
+      }
+
+      let usageCount = 0;
+
+      rule.usagePatterns.forEach(pattern => {
+        usageCount += countRegexMatches(
+          combinedContent,
+          pattern
+        );
+      });
+
+      const appearsUnused =
+        rule.usagePatterns.length > 0 &&
+        usageCount === 0;
+
+      results.push({
+        packageName,
+        status: rule.status,
+        note: rule.note,
+        loadedIn: [...new Set(loadedIn)],
+        usageCount,
+        appearsUnused,
+        autoRemove:
+          Boolean(rule.autoRemoveIfUnused) &&
+          appearsUnused
+      });
+    });
+
+  return results;
+}
+
+
+function removePackageFromSource(source, packageName) {
+  const changes = [];
+
+  const packagePattern =
+    /\\(usepackage|RequirePackage)(\s*\[[^\]]*\])?\s*\{([^{}]+)\}/g;
+
+  source = source.replace(
+    packagePattern,
+    (fullMatch, command, options = "", packageList) => {
+      const packages = packageList
+        .split(",")
+        .map(name => name.trim())
+        .filter(Boolean);
+
+      const hasTarget = packages.some(name =>
+        name.toLowerCase() === packageName.toLowerCase()
+      );
+
+      if (!hasTarget) {
+        return fullMatch;
+      }
+
+      const remaining = packages.filter(name =>
+        name.toLowerCase() !== packageName.toLowerCase()
+      );
+
+      changes.push(
+        `Removed unused incompatible package ${packageName}.`
+      );
+
+      if (remaining.length === 0) {
+        return "";
+      }
+
+      return `\\${command}${options || ""}{${remaining.join(",")}}`;
+    }
+  );
+
+  return {
+    source,
+    changes
+  };
+}
+
+
+/* =========================================================
    REPORT
    ========================================================= */
 
@@ -726,17 +941,25 @@ function renderReport(data) {
   // DOCUMENT METADATA
   addSectionHeading("Document metadata");
 
-  if (data.metadataResults.length === 0) {
+  const selectedMain = currentDependencyGraph
+    ? currentDependencyGraph.root
+    : mainDocumentSelect.value;
+
+  const selectedMetadataResult =
+    data.metadataResults.find(result =>
+      normalizeProjectPath(result.filename) ===
+      normalizeProjectPath(selectedMain || "")
+    );
+
+  if (!selectedMetadataResult) {
     addResult(
       "warning",
-      "No candidate main document was available for metadata inspection."
+      "No selected main document was available for metadata inspection."
     );
-  }
+  } else {
+    const result = selectedMetadataResult;
 
-  data.metadataResults.forEach(result => {
-    const heading = document.createElement("h4");
-    heading.textContent = result.filename;
-    report.appendChild(heading);
+    addDetail(result.filename);
 
     addResult(
       result.hasMetadata ? "pass" : "fail",
@@ -788,25 +1011,34 @@ function renderReport(data) {
           : "math/setup=mathml-SE was not found inside \\DocumentMetadata."
       );
     }
-  });
+  }
 
 
-  // PROJECT-WIDE MATHML
+  // SELECTED-SCOPE MATHML
   addSectionHeading("Math accessibility");
 
-  if (data.mathMLFiles.length > 0) {
+  const scopedFiles = getScopedFiles(
+    data.files,
+    currentDependencyGraph
+  );
+
+  const scopedMathMLFiles = scopedFiles.filter(file =>
+    /math\s*\/\s*setup\s*=\s*mathml-SE/i.test(file.content)
+  );
+
+  if (scopedMathMLFiles.length > 0) {
     addResult(
       "pass",
-      "math/setup=mathml-SE was detected in the project."
+      "math/setup=mathml-SE was detected in the selected project scope."
     );
 
-    data.mathMLFiles.forEach(file => {
+    scopedMathMLFiles.forEach(file => {
       addDetail(file.filename);
     });
   } else {
     addResult(
       "fail",
-      "math/setup=mathml-SE was not detected anywhere in the project."
+      "math/setup=mathml-SE was not detected in the selected project scope."
     );
   }
 
@@ -814,10 +1046,16 @@ function renderReport(data) {
   // LUAMML DISABLING
   addSectionHeading("LuaMML compatibility");
 
-  if (data.luaMMLDisabledFiles.length === 0) {
+  const scopedLuaMMLDisabledFiles = scopedFiles.filter(file =>
+    /math\s*\/\s*mathml\s*\/\s*luamml\s*\/\s*load\s*=\s*false/i.test(
+      file.content
+    )
+  );
+
+  if (scopedLuaMMLDisabledFiles.length === 0) {
     addResult(
       "pass",
-      "No setting that explicitly disables LuaMML was detected."
+      "No setting that explicitly disables LuaMML was detected in the selected project scope."
     );
   } else {
     addResult(
@@ -825,12 +1063,68 @@ function renderReport(data) {
       "LuaMML is explicitly disabled. This prevents MathML from being generated."
     );
 
-    data.luaMMLDisabledFiles.forEach(file => {
+    scopedLuaMMLDisabledFiles.forEach(file => {
       addDetail(
         `${file.filename} contains math/mathml/luamml/load=false`
       );
     });
   }
+
+
+  // PACKAGE COMPATIBILITY
+  addSectionHeading("Package compatibility");
+
+  const packageCompatibility =
+    analyzePackageCompatibility(
+      data.files,
+      currentDependencyGraph
+    );
+
+  if (packageCompatibility.length === 0) {
+    addResult(
+      "pass",
+      "None of the currently tracked incompatible packages were detected in the selected project scope."
+    );
+  } else {
+    packageCompatibility.forEach(item => {
+      if (
+        item.packageName === "systeme" &&
+        item.autoRemove
+      ) {
+        addResult(
+          "warning",
+          "systeme is currently incompatible with LuaMML, but it appears unused. The accessible-copy fixer will remove it automatically."
+        );
+      } else {
+        addResult(
+          "warning",
+          `${item.packageName}: ${item.status}. ${item.note}`
+        );
+      }
+
+      item.loadedIn.forEach(filename => {
+        addDetail(`Loaded in: ${filename}`);
+      });
+
+
+      if (item.packageName === "systeme") {
+        addDetail(
+          item.usageCount === 0
+            ? "No systeme-specific command was detected in the selected project scope."
+            : `${item.usageCount} systeme-specific command usage(s) detected; automatic removal will not be performed.`
+        );
+      }
+
+      if (item.packageName === "esvect") {
+        addDetail(
+          item.usageCount === 0
+            ? "No \\vv command was detected in the selected project scope."
+            : `${item.usageCount} \\vv usage(s) detected; no automatic change will be made.`
+        );
+      }
+    });
+  }
+
 }
 
 
@@ -912,6 +1206,18 @@ fixButton.addEventListener("click", async () => {
     const filesToFix = projectScope.usedFiles;
     const changes = [];
 
+    const packageCompatibility =
+      analyzePackageCompatibility(
+        currentLatexFiles,
+        projectScope
+      );
+
+    const removeUnusedSysteme =
+      packageCompatibility.some(item =>
+        item.packageName === "systeme" &&
+        item.autoRemove
+      );
+
     for (const [rawFilename, zipEntry] of Object.entries(outputZip.files)) {
       if (zipEntry.dir) {
         continue;
@@ -959,6 +1265,20 @@ fixButton.addEventListener("click", async () => {
         changes.push(`${filename}: ${change}`);
       });
 
+      // systeme is currently incompatible with LuaMML. If the package
+      // is loaded but no \systeme command is used anywhere in the
+      // selected project scope, remove the package declaration safely.
+      if (removeUnusedSysteme) {
+        const packageRemovalResult =
+          removePackageFromSource(source, "systeme");
+
+        source = packageRemovalResult.source;
+
+        packageRemovalResult.changes.forEach(change => {
+          changes.push(`${filename}: ${change}`);
+        });
+      }
+
       if (source !== originalSource) {
         outputZip.file(rawFilename, source);
       }
@@ -967,7 +1287,8 @@ fixButton.addEventListener("click", async () => {
     const reportText = buildAccessibilityChangesReport(
       rootFilename,
       changes,
-      projectScope
+      projectScope,
+      packageCompatibility
     );
 
     outputZip.file(
@@ -1428,7 +1749,8 @@ function removeLuaMMLDisablingSettings(source) {
 function buildAccessibilityChangesReport(
   rootFilename,
   changes,
-  projectScope
+  projectScope,
+  packageCompatibility = []
 ) {
   let text =
 `LATEX ACCESSIBILITY PROJECT FIXER
@@ -1479,6 +1801,24 @@ Warnings
     projectScope.dynamic.forEach(item => {
       text +=
         `- Dynamic reference requires review: ${item.from} -> ${item.target}\n`;
+    });
+  }
+
+  if (packageCompatibility.length > 0) {
+    text +=
+`
+Package compatibility review
+----------------------------
+`;
+
+    packageCompatibility.forEach(item => {
+      if (item.packageName === "systeme" && item.autoRemove) {
+        text +=
+          `- systeme: loaded but no systeme-specific command usage detected; package declaration removed automatically.\n`;
+      } else {
+        text +=
+          `- ${item.packageName}: ${item.status}. ${item.note}\n`;
+      }
     });
   }
 
